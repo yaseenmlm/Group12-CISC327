@@ -1,2 +1,6 @@
-# Group12-CISC327
-Repository for group 12, for class CISC 327
+# Group 12 · CISC 327
+
+Team repository for Group 12 in CISC 327 at Queen's University.
+
+## Team
+- [@yaseenmlm](https://github.com/yaseenmlm)
