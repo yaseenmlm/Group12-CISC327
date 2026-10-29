@@ -327,3 +327,70 @@ def test_list_loans_for_unknown_book_id_is_empty(client):
     make_member(client)
     client.post("/loans", json={"book_id": 1, "member_id": 1})
     assert client.get("/loans?book_id=500").get_json() == []
+
+
+# ---------------------------------------------------------------------------
+# Feature: web UI - home page, books page, loans page  (R6, R13, R15)
+# ---------------------------------------------------------------------------
+def test_ui_home_page_links_to_books_members_and_loans(client):
+    resp = client.get("/")
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "Library Management System" in html
+    for path in ("/ui/books", "/ui/members", "/ui/loans"):
+        assert f'href="{path}"' in html
+
+
+def test_ui_add_book_form_creates_book_shown_with_availability(client):
+    resp = client.post(
+        "/ui/books",
+        data={"title": "Emma", "author": "Jane Austen", "isbn": "42", "total_copies": "3"},
+    )
+
+    assert resp.status_code == 302  # redirect back to the list
+    assert store.books[1].available_copies == 3
+    page = client.get("/ui/books").get_data(as_text=True)
+    assert "Emma" in page and "Jane Austen" in page
+
+
+def test_ui_delete_book_removes_it_from_page_and_store(client):
+    make_book(client, title="Gone Soon")
+    assert "Gone Soon" in client.get("/ui/books").get_data(as_text=True)
+
+    client.post("/ui/books/1/delete")
+
+    assert 1 not in store.books
+    assert "Gone Soon" not in client.get("/ui/books").get_data(as_text=True)
+
+
+def test_ui_checkout_then_return_updates_availability_and_page(client):
+    make_book(client, total_copies=1)
+    make_member(client)
+
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "1"})
+    assert store.books[1].available_copies == 0
+    loans_page = client.get("/ui/loans").get_data(as_text=True)
+    assert "Return" in loans_page  # button offered for an open loan
+
+    client.post("/ui/loans/1/return")
+    assert store.books[1].available_copies == 1
+    assert store.loans[1].return_date == date.today()
+    assert 'action="/ui/loans/1/return"' not in client.get("/ui/loans").get_data(as_text=True)
+
+
+def test_ui_checkout_of_unknown_book_records_no_loan(client):
+    make_member(client)
+    client.post("/ui/loans", data={"book_id": "99", "member_id": "1"})
+    assert store.loans == {}
+
+
+def test_ui_returning_a_loan_twice_does_not_add_extra_copies(client):
+    make_book(client, total_copies=1)
+    make_member(client)
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "1"})
+
+    client.post("/ui/loans/1/return")
+    client.post("/ui/loans/1/return")
+
+    assert store.books[1].available_copies == 1
