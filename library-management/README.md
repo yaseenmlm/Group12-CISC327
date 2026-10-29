@@ -36,6 +36,7 @@ app working without a REST client, and calls the same in-memory store.
 - **Book**: `id, title, author, isbn, total_copies, available_copies`
 - **Member**: `id, name, email, membership_date`
 - **Loan**: `id, book_id, member_id, loan_date, due_date, return_date`
+- **Reservation**: `id, book_id, member_id, reservation_date, fulfilled`
 
 ## JSON API Endpoints
 
@@ -54,6 +55,22 @@ app working without a REST client, and calls the same in-memory store.
 | POST | `/loans` | Check out a book (`book_id`, `member_id`) |
 | PUT | `/loans/<id>/return` | Return a loaned book |
 | GET | `/loans?member_id=&book_id=` | Look up loans |
+| PUT | `/loans/<id>/renew` | Renew a loan for another 14 days (`409` if another member has a hold on the book) |
+| GET | `/loans/<id>/fine` | Fine for a loan at $0.25 per day overdue |
+| GET | `/reservations?book_id=&member_id=` | List reservations (holds) |
+| POST | `/reservations` | Place a hold on a book (`book_id`, `member_id`) |
+| GET | `/reservations/queue?book_id=` | Open holds for a book in the order they will be served (`position`, `reservation_id`, `member_id`, `reservation_date`) |
+
+### Hold queue rules (checkout and renew)
+
+- `POST /loans` returns `409` when no copy is free (`No copies available`) or when
+  the free copies are reserved for members ahead of the borrower
+  (`Book is on hold for another member`).
+- When a member with a hold borrows the book, that hold is marked `fulfilled`
+  and leaves the queue.
+- `PUT /loans/<id>/renew` returns `409` while any other member has an open hold
+  on the book.
+- The same checkout rules apply to the web UI Loans page.
 
 ## Tests
 
