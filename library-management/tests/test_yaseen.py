@@ -197,3 +197,133 @@ def test_delete_book_removes_it_and_second_delete_is_404(client):
 
 def test_delete_book_nonexistent_id_returns_404(client):
     assert client.delete("/books/77").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Feature: check out a book  (R15, R16, R13)
+# ---------------------------------------------------------------------------
+def test_checkout_creates_loan_with_14_day_due_date_and_decrements_copies(client):
+    make_book(client, total_copies=2)
+    make_member(client)
+
+    resp = client.post("/loans", json={"book_id": 1, "member_id": 1})
+
+    assert resp.status_code == 201
+    loan = resp.get_json()
+    assert loan["id"] == 1
+    assert loan["book_id"] == 1
+    assert loan["member_id"] == 1
+    assert loan["loan_date"] == date.today().isoformat()
+    assert loan["due_date"] == (date.today() + timedelta(days=14)).isoformat()
+    assert loan["return_date"] is None
+    assert client.get("/books/1").get_json()["available_copies"] == 1
+
+
+def test_checkout_of_every_copy_brings_availability_to_zero(client):
+    make_book(client, total_copies=2)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    client.post("/loans", json={"book_id": 1, "member_id": 2})
+
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+    assert len(client.get("/loans").get_json()) == 2
+
+
+def test_checkout_nonexistent_book_returns_404_and_records_no_loan(client):
+    make_member(client)
+
+    resp = client.post("/loans", json={"book_id": 99, "member_id": 1})
+
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Book not found"}
+    assert client.get("/loans").get_json() == []
+
+
+# ---------------------------------------------------------------------------
+# Feature: return a book  (R15, R16)
+# ---------------------------------------------------------------------------
+def test_return_restores_copy_sets_return_date_and_keeps_history(client):
+    make_book(client, total_copies=1)
+    make_member(client)
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+
+    resp = client.put("/loans/1/return")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["return_date"] == date.today().isoformat()
+    assert client.get("/books/1").get_json()["available_copies"] == 1
+    # the returned loan is still on record (R16 - past loan history)
+    history = client.get("/loans").get_json()
+    assert len(history) == 1
+    assert history[0]["return_date"] == date.today().isoformat()
+
+
+def test_return_twice_is_rejected_and_does_not_add_a_second_copy(client):
+    make_book(client, total_copies=1)
+    make_member(client)
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    client.put("/loans/1/return")
+
+    second = client.put("/loans/1/return")
+
+    assert second.status_code == 400
+    assert second.get_json() == {"error": "Loan already returned"}
+    assert client.get("/books/1").get_json()["available_copies"] == 1  # not 2
+
+
+def test_return_nonexistent_loan_returns_404(client):
+    resp = client.put("/loans/55/return")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Loan not found"}
+
+
+def test_checkout_return_checkout_again_workflow(client):
+    """Chained operations: borrow, return, someone else borrows the same copy."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+
+    first = client.post("/loans", json={"book_id": 1, "member_id": 1}).get_json()
+    client.put(f"/loans/{first['id']}/return")
+    second = client.post("/loans", json={"book_id": 1, "member_id": 2}).get_json()
+
+    assert second["id"] == 2
+    assert second["member_id"] == 2
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+    history = client.get("/loans?book_id=1").get_json()
+    assert [(l["member_id"], l["return_date"] is None) for l in history] == [(1, False), (2, True)]
+
+
+# ---------------------------------------------------------------------------
+# Feature: look up loans  (R7, R16)
+# ---------------------------------------------------------------------------
+def test_list_loans_without_filter_returns_every_loan(client):
+    make_book(client, "A", isbn="1")
+    make_book(client, "B", isbn="2")
+    make_member(client)
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    client.post("/loans", json={"book_id": 2, "member_id": 1})
+
+    assert len(client.get("/loans").get_json()) == 2
+
+
+def test_list_loans_filtered_by_book_id_returns_only_that_books_loans(client):
+    make_book(client, "A", isbn="1")
+    make_book(client, "B", isbn="2")
+    make_member(client)
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    client.post("/loans", json={"book_id": 2, "member_id": 1})
+
+    result = client.get("/loans?book_id=2").get_json()
+
+    assert [l["book_id"] for l in result] == [2]
+
+
+def test_list_loans_for_unknown_book_id_is_empty(client):
+    make_book(client)
+    make_member(client)
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+    assert client.get("/loans?book_id=500").get_json() == []
