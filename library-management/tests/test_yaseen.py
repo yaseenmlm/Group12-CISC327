@@ -394,3 +394,74 @@ def test_ui_returning_a_loan_twice_does_not_add_extra_copies(client):
     client.post("/ui/loans/1/return")
 
     assert store.books[1].available_copies == 1
+
+
+# ---------------------------------------------------------------------------
+# Defect-exposing tests.  Each encodes the behaviour the requirement asks for;
+# on the unmodified reference app they FAIL.  Explained in the report (Testing).
+# ---------------------------------------------------------------------------
+def test_checkout_is_refused_when_no_copies_are_available(client):
+    """R13/R16: availability must stay accurate; a book with 0 copies left
+    cannot be lent out.  Observed: 201 and available_copies becomes -1."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+
+    resp = client.post("/loans", json={"book_id": 1, "member_id": 2})
+
+    assert resp.status_code in (400, 409)
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+
+
+def test_checkout_for_unknown_member_is_refused(client):
+    """R16: each loan must record which (existing) member holds the book.
+    Observed: 201 with member_id 99 although no such member exists."""
+    make_book(client)
+
+    resp = client.post("/loans", json={"book_id": 1, "member_id": 99})
+
+    assert resp.status_code == 404
+    assert client.get("/loans").get_json() == []
+
+
+def test_loans_lookup_by_member_id_returns_only_that_members_loans(client):
+    """R7: a member must be able to see their own loans.
+    Observed: the filter compares loan.book_id with member_id."""
+    make_book(client, "A", isbn="1")
+    make_book(client, "B", isbn="2")
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    client.post("/loans", json={"book_id": 1, "member_id": 2})  # Bob borrows book 1
+    client.post("/loans", json={"book_id": 2, "member_id": 1})  # Ann borrows book 2
+
+    result = client.get("/loans?member_id=1").get_json()
+
+    assert [(l["member_id"], l["book_id"]) for l in result] == [(1, 2)]
+
+
+def test_failed_checkout_leaves_available_copies_unchanged(lenient_client):
+    """R13: a rejected checkout must not change availability.
+    Observed: copies are decremented before member_id is read, so a request
+    without member_id raises KeyError (500) AFTER removing a copy."""
+    lenient_client.post(
+        "/books", json={"title": "T", "author": "A", "isbn": "1", "total_copies": 2}
+    )
+
+    resp = lenient_client.post("/loans", json={"book_id": 1})  # member_id missing
+
+    assert resp.status_code >= 400
+    assert lenient_client.get("/books/1").get_json()["available_copies"] == 2
+    assert lenient_client.get("/loans").get_json() == []
+
+
+def test_ui_checkout_is_refused_when_no_copies_are_available(client):
+    """R13: same rule through the web form.  Observed: available_copies -> -1."""
+    make_book(client, total_copies=1)
+    make_member(client)
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "1"})
+
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "1"})
+
+    assert store.books[1].available_copies >= 0
+    assert len(store.loans) == 1
