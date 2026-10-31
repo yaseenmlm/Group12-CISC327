@@ -152,3 +152,88 @@ def test_delete_member_does_not_affect_other_members(client):
     client.delete("/members/1")
 
     assert [m["name"] for m in client.get("/members").get_json()] == ["Bob"]
+
+
+# ---------------------------------------------------------------------------
+# Feature: renew a loan  (R9)
+# ---------------------------------------------------------------------------
+def test_renew_extends_due_date_by_14_days_and_keeps_loan_open(client):
+    make_book(client)
+    make_member(client)
+    loan = checkout(client)
+    original_due = date.fromisoformat(loan["due_date"])
+
+    resp = client.put("/loans/1/renew")
+
+    assert resp.status_code == 200
+    renewed = resp.get_json()
+    assert date.fromisoformat(renewed["due_date"]) == original_due + timedelta(days=14)
+    assert renewed["return_date"] is None
+    # persistent: lookup shows the new due date
+    assert client.get("/loans?book_id=1").get_json()[0]["due_date"] == renewed["due_date"]
+
+
+def test_renew_twice_accumulates_28_days_without_changing_availability(client):
+    make_book(client, total_copies=1)
+    make_member(client)
+    loan = checkout(client)
+
+    client.put("/loans/1/renew")
+    second = client.put("/loans/1/renew").get_json()
+
+    expected = date.fromisoformat(loan["due_date"]) + timedelta(days=28)
+    assert date.fromisoformat(second["due_date"]) == expected
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+
+
+def test_renew_unknown_loan_returns_404(client):
+    resp = client.put("/loans/99/renew")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Loan not found"}
+
+
+def test_renew_returned_loan_is_rejected_and_due_date_unchanged(client):
+    make_book(client)
+    make_member(client)
+    loan = checkout(client)
+    client.put("/loans/1/return")
+
+    resp = client.put("/loans/1/renew")
+
+    assert resp.status_code == 400
+    assert resp.get_json() == {"error": "Loan already returned"}
+    assert client.get("/loans").get_json()[0]["due_date"] == loan["due_date"]
+
+
+# ---------------------------------------------------------------------------
+# Feature: calculate a fine   ($0.25 per day overdue; see FINE_PER_DAY)
+# ---------------------------------------------------------------------------
+def _open_loan_due_in(client, days_from_today):
+    make_book(client, total_copies=2)
+    make_member(client)
+    checkout(client)
+    store.loans[1].due_date = date.today() + timedelta(days=days_from_today)
+
+
+def test_fine_is_zero_for_loan_not_yet_due(client):
+    _open_loan_due_in(client, 3)
+    assert client.get("/loans/1/fine").get_json() == {"loan_id": 1, "fine_amount": 0.0}
+
+
+def test_fine_is_zero_on_the_due_date_itself(client):
+    _open_loan_due_in(client, 0)
+    assert client.get("/loans/1/fine").get_json()["fine_amount"] == 0.0
+
+
+def test_fine_is_25_cents_for_one_day_overdue_and_scales_linearly(client):
+    _open_loan_due_in(client, -1)
+    assert client.get("/loans/1/fine").get_json()["fine_amount"] == 0.25
+
+    store.loans[1].due_date = date.today() - timedelta(days=10)
+    assert client.get("/loans/1/fine").get_json()["fine_amount"] == 2.5
+
+
+def test_fine_for_unknown_loan_returns_404(client):
+    resp = client.get("/loans/5/fine")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Loan not found"}
