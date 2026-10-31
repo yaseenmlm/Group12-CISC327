@@ -342,3 +342,90 @@ def test_ui_delete_member_removes_member_and_ignores_unknown_ids(client):
     assert store.members == {}
     # deleting an id that does not exist is harmless
     assert client.post("/ui/members/1/delete").status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# Defect-exposing tests.  Each encodes the behaviour the requirement asks for;
+# on the unmodified reference app they FAIL.  Explained in the report (Testing).
+# ---------------------------------------------------------------------------
+def test_checkout_by_another_member_is_blocked_while_a_hold_exists(client):
+    """R8: a held book must be kept for the member who reserved it.
+    Observed: loans.checkout_book never looks at store.reservations (201)."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    make_member(client, "Cy", "c@x.com")
+    checkout(client, 1, 1)  # Ann borrows the only copy
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})  # Bob holds it
+    client.put("/loans/1/return")  # Ann returns - copy is now held for Bob
+
+    resp = client.post("/loans", json={"book_id": 1, "member_id": 3})  # Cy tries
+
+    assert resp.status_code in (400, 409)
+    assert client.get("/books/1").get_json()["available_copies"] == 1
+
+
+def test_renew_is_refused_when_another_member_has_a_hold(client):
+    """R9: a member may renew only if no hold exists.
+    Observed: renew succeeds (200) and ignores the reservation."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    loan = checkout(client, 1, 1)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    resp = client.put("/loans/1/renew")
+
+    assert resp.status_code in (400, 409)
+    assert client.get("/loans").get_json()[0]["due_date"] == loan["due_date"]
+
+
+def test_checkout_by_the_member_with_the_hold_marks_it_fulfilled(client):
+    """R8: when the member who reserved the book borrows it, the hold is used up.
+    Observed: fulfilled stays False forever (nothing ever sets it)."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    checkout(client, 1, 1)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+    client.put("/loans/1/return")
+
+    checkout(client, 1, 2)
+
+    assert client.get("/reservations").get_json()[0]["fulfilled"] is True
+
+
+def test_same_member_cannot_hold_the_same_book_twice(client):
+    """R8: one place per member in the queue.  Observed: 201 for a duplicate."""
+    _book_on_loan_to_ann(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    resp = client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    assert resp.status_code in (400, 409)
+    assert len(client.get("/reservations?member_id=2").get_json()) == 1
+
+
+def test_hold_is_refused_for_a_book_that_is_available(client):
+    """R8: holds are for CHECKED-OUT books.  Observed: reserving an available
+    book is accepted (201)."""
+    make_book(client, total_copies=1)
+    make_member(client)
+
+    resp = client.post("/reservations", json={"book_id": 1, "member_id": 1})
+
+    assert resp.status_code in (400, 409)
+
+
+def test_fine_is_frozen_at_the_return_date(client):
+    """Existing fine feature (no matching Table A requirement): the fine of a returned loan
+    must not keep growing.  Observed: fine always uses date.today(), so a book
+    returned 5 days late (fine 1.25) reports 5.0 once 20 days have passed."""
+    make_book(client, total_copies=2)
+    make_member(client)
+    checkout(client)
+    loan = store.loans[1]
+    loan.due_date = date.today() - timedelta(days=20)
+    loan.return_date = date.today() - timedelta(days=15)  # returned 5 days late
+
+    assert client.get("/loans/1/fine").get_json()["fine_amount"] == 1.25
