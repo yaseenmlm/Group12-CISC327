@@ -237,3 +237,108 @@ def test_fine_for_unknown_loan_returns_404(client):
     resp = client.get("/loans/5/fine")
     assert resp.status_code == 404
     assert resp.get_json() == {"error": "Loan not found"}
+
+
+# ---------------------------------------------------------------------------
+# Feature: create a reservation  (R8)
+# ---------------------------------------------------------------------------
+def _book_on_loan_to_ann(client):
+    """Book 1 (single copy) is on loan to member 1; members 2 and 3 also exist."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    make_member(client, "Cy", "c@x.com")
+    checkout(client, book_id=1, member_id=1)
+
+
+def test_create_reservation_returns_fields_and_is_listed(client):
+    _book_on_loan_to_ann(client)
+
+    resp = client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    assert resp.status_code == 201
+    reservation = resp.get_json()
+    assert reservation["id"] == 1
+    assert reservation["book_id"] == 1
+    assert reservation["member_id"] == 2
+    assert reservation["reservation_date"] == date.today().isoformat()
+    assert reservation["fulfilled"] is False
+    assert client.get("/reservations").get_json() == [reservation]
+
+
+def test_create_reservation_unknown_book_returns_404_and_stores_nothing(client):
+    make_member(client)
+    resp = client.post("/reservations", json={"book_id": 9, "member_id": 1})
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Book not found"}
+    assert client.get("/reservations").get_json() == []
+
+
+def test_create_reservation_unknown_member_returns_404_and_stores_nothing(client):
+    make_book(client)
+    resp = client.post("/reservations", json={"book_id": 1, "member_id": 9})
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Member not found"}
+    assert client.get("/reservations").get_json() == []
+
+
+# ---------------------------------------------------------------------------
+# Feature: list / filter reservations  (R8)
+# ---------------------------------------------------------------------------
+def test_reservations_keep_first_come_first_served_order(client):
+    _book_on_loan_to_ann(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 3})
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    queue = client.get("/reservations?book_id=1").get_json()
+
+    assert [r["member_id"] for r in queue] == [3, 2]  # Cy asked first
+    assert [r["id"] for r in queue] == [1, 2]
+
+
+def test_reservations_can_be_filtered_by_book_and_by_member(client):
+    make_book(client, "A", isbn="1")
+    make_book(client, "B", isbn="2")
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    client.post("/reservations", json={"book_id": 1, "member_id": 1})
+    client.post("/reservations", json={"book_id": 2, "member_id": 1})
+    client.post("/reservations", json={"book_id": 2, "member_id": 2})
+
+    by_book = client.get("/reservations?book_id=2").get_json()
+    by_member = client.get("/reservations?member_id=1").get_json()
+    both = client.get("/reservations?book_id=2&member_id=2").get_json()
+
+    assert [r["member_id"] for r in by_book] == [1, 2]
+    assert [r["book_id"] for r in by_member] == [1, 2]
+    assert [(r["book_id"], r["member_id"]) for r in both] == [(2, 2)]
+
+
+def test_reservation_filter_with_no_match_returns_empty_list(client):
+    _book_on_loan_to_ann(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+    assert client.get("/reservations?member_id=3").get_json() == []
+
+
+# ---------------------------------------------------------------------------
+# Feature: web UI - members page
+# ---------------------------------------------------------------------------
+def test_ui_members_page_is_empty_initially_and_lists_added_member(client):
+    first = client.get("/ui/members")
+    assert first.status_code == 200
+    assert "Ann Lee" not in first.get_data(as_text=True)
+
+    resp = client.post("/ui/members", data={"name": "Ann Lee", "email": "ann@x.com"})
+
+    assert resp.status_code == 302
+    assert store.members[1].email == "ann@x.com"
+    assert "Ann Lee" in client.get("/ui/members").get_data(as_text=True)
+
+
+def test_ui_delete_member_removes_member_and_ignores_unknown_ids(client):
+    make_member(client, "Ann Lee", "a@x.com")
+
+    assert client.post("/ui/members/1/delete").status_code == 302
+    assert store.members == {}
+    # deleting an id that does not exist is harmless
+    assert client.post("/ui/members/1/delete").status_code == 302
