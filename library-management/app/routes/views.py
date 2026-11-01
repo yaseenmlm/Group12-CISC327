@@ -6,6 +6,7 @@ from app import store
 from app.models.book import Book
 from app.models.loan import Loan
 from app.models.member import Member
+from app.models.reservation import can_check_out, fulfill_hold
 
 views_bp = Blueprint("views", __name__)
 
@@ -61,7 +62,7 @@ def loans_page():
         book_id = int(request.form["book_id"])
         member_id = int(request.form["member_id"])
         book = store.books.get(book_id)
-        if book is not None:
+        if book is not None and can_check_out(book, member_id):
             book.available_copies -= 1
             loan_id = store.next_id("loan")
             loan = Loan(
@@ -71,6 +72,7 @@ def loans_page():
                 due_date=Loan.default_due_date(),
             )
             store.loans[loan_id] = loan
+            fulfill_hold(book_id, member_id)
         return redirect(url_for("views.loans_page"))
     return render_template("loans.html", loans=store.loans.values())
 
