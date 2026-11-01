@@ -11,6 +11,7 @@ Conventions
   * ``lenient_client`` - same app with TESTING=False so an unhandled exception
                          becomes an HTTP 500 response we can assert on.
 """
+import time
 from datetime import date, timedelta
 
 import pytest
@@ -429,3 +430,107 @@ def test_fine_is_frozen_at_the_return_date(client):
     loan.return_date = date.today() - timedelta(days=15)  # returned 5 days late
 
     assert client.get("/loans/1/fine").get_json()["fine_amount"] == 1.25
+
+
+# ---------------------------------------------------------------------------
+# Enhancement (Rohan): front-desk member lookup  (R11, R14)  - feature/member-lookup
+#   * GET /members?search=<text>      case-insensitive match on member name
+#   * GET /members/<id>/overdue       lists the member's open overdue loans
+# ---------------------------------------------------------------------------
+def test_member_search_matches_name_case_insensitively_and_partially(client):
+    make_member(client, "Ann Lee", "ann@x.com")
+    make_member(client, "Bob Stone", "bob@x.com")
+    make_member(client, "Joanne Park", "jo@x.com")
+
+    result = client.get("/members?search=ANN").get_json()
+
+    assert sorted(m["name"] for m in result) == ["Ann Lee", "Joanne Park"]
+    assert [m["name"] for m in client.get("/members?search=stone").get_json()] == ["Bob Stone"]
+
+
+def test_member_search_no_match_empty_and_blank_search_returns_everyone(client):
+    make_member(client, "Ann Lee", "ann@x.com")
+    make_member(client, "Bob Stone", "bob@x.com")
+
+    assert client.get("/members?search=zzz").get_json() == []
+    assert len(client.get("/members?search=").get_json()) == 2
+    assert len(client.get("/members").get_json()) == 2
+
+
+def test_member_search_does_not_match_on_email(client):
+    make_member(client, "Ann Lee", "secret@x.com")
+    assert client.get("/members?search=secret").get_json() == []
+
+
+def test_member_search_over_800_members_is_fast(client):
+    """R11 + R12: member search across the 800-member target in under 3 s."""
+    for i in range(800):
+        client.post("/members", json={"name": f"Member {i}", "email": f"m{i}@x.com"})
+
+    start = time.perf_counter()
+    result = client.get("/members?search=member 799").get_json()
+    elapsed = time.perf_counter() - start
+
+    assert [m["name"] for m in result] == ["Member 799"]
+    assert elapsed < 3.0
+
+
+def test_overdue_lists_only_open_loans_past_due_with_days_overdue(client):
+    make_book(client, "Late Book", isbn="1", total_copies=2)
+    make_book(client, "On Time", isbn="2", total_copies=2)
+    make_member(client, "Ann", "a@x.com")
+    checkout(client, 1, 1)
+    checkout(client, 2, 1)
+    store.loans[1].due_date = date.today() - timedelta(days=4)   # overdue
+    store.loans[2].due_date = date.today() + timedelta(days=5)   # fine
+
+    resp = client.get("/members/1/overdue")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["member_id"] == 1 and body["name"] == "Ann"
+    assert body["has_overdue"] is True
+    assert body["overdue_loans"] == [
+        {
+            "loan_id": 1,
+            "book_id": 1,
+            "book_title": "Late Book",
+            "due_date": (date.today() - timedelta(days=4)).isoformat(),
+            "days_overdue": 4,
+        }
+    ]
+
+
+def test_overdue_is_clear_for_members_without_late_open_loans(client):
+    make_book(client, total_copies=2)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    checkout(client, 1, 1)
+    store.loans[1].due_date = date.today()  # due today is not overdue yet
+
+    for member_id in (1, 2):  # Ann due today; Bob has no loans at all
+        body = client.get(f"/members/{member_id}/overdue").get_json()
+        assert body["has_overdue"] is False
+        assert body["overdue_loans"] == []
+
+
+def test_overdue_alert_clears_after_the_book_is_returned_and_ignores_other_members(client):
+    make_book(client, total_copies=2)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    checkout(client, 1, 1)
+    checkout(client, 1, 2)
+    store.loans[1].due_date = date.today() - timedelta(days=2)
+    store.loans[2].due_date = date.today() - timedelta(days=9)
+
+    assert client.get("/members/1/overdue").get_json()["overdue_loans"][0]["days_overdue"] == 2
+    client.put("/loans/1/return")
+
+    assert client.get("/members/1/overdue").get_json()["has_overdue"] is False
+    assert client.get("/members/2/overdue").get_json()["has_overdue"] is True
+
+
+def test_overdue_for_unknown_member_returns_404(client):
+    resp = client.get("/members/77/overdue")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "Member not found"}
