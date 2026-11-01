@@ -465,3 +465,113 @@ def test_ui_checkout_is_refused_when_no_copies_are_available(client):
 
     assert store.books[1].available_copies >= 0
     assert len(store.loans) == 1
+
+
+# ---------------------------------------------------------------------------
+# Enhancement (Yaseen): hold queue enforcement  (R8, R9)  - feature/hold-queue
+#   * checkout respects the queue and stock       -> 409 when not allowed
+#   * the borrowing holder's hold becomes fulfilled
+#   * renew is refused while another member waits
+#   * GET /reservations/queue?book_id=<id> shows the waiting order
+# ---------------------------------------------------------------------------
+def _single_copy_on_loan(client):
+    """Book 1 (1 copy) on loan to Ann (id 1); Bob (2) and Cy (3) also exist."""
+    make_book(client, total_copies=1)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    make_member(client, "Cy", "c@x.com")
+    client.post("/loans", json={"book_id": 1, "member_id": 1})
+
+
+def test_hold_queue_endpoint_lists_open_holds_in_order_with_positions(client):
+    _single_copy_on_loan(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 3})
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+
+    resp = client.get("/reservations/queue?book_id=1")
+
+    assert resp.status_code == 200
+    queue = resp.get_json()
+    assert [(q["position"], q["member_id"]) for q in queue] == [(1, 3), (2, 2)]
+    assert [q["reservation_id"] for q in queue] == [1, 2]
+
+
+def test_hold_queue_endpoint_validates_book_id(client):
+    assert client.get("/reservations/queue").status_code == 400
+    missing = client.get("/reservations/queue?book_id=99")
+    assert missing.status_code == 404
+    assert missing.get_json() == {"error": "Book not found"}
+
+
+def test_second_in_queue_cannot_jump_ahead_and_fulfilled_hold_leaves_queue(client):
+    _single_copy_on_loan(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})  # Bob first
+    client.post("/reservations", json={"book_id": 1, "member_id": 3})  # Cy second
+    client.put("/loans/1/return")  # Ann returns; one copy is free
+
+    cy_attempt = client.post("/loans", json={"book_id": 1, "member_id": 3})
+    assert cy_attempt.status_code == 409
+    assert cy_attempt.get_json() == {"error": "Book is on hold for another member"}
+    assert client.get("/books/1").get_json()["available_copies"] == 1  # unchanged
+
+    bob = client.post("/loans", json={"book_id": 1, "member_id": 2})
+    assert bob.status_code == 201
+
+    queue = client.get("/reservations/queue?book_id=1").get_json()
+    assert [(q["position"], q["member_id"]) for q in queue] == [(1, 3)]  # Cy moved up
+    assert client.get("/reservations?member_id=2").get_json()[0]["fulfilled"] is True
+
+
+def test_checkout_with_no_free_copy_returns_409_and_keeps_count_at_zero(client):
+    _single_copy_on_loan(client)
+
+    resp = client.post("/loans", json={"book_id": 1, "member_id": 2})
+
+    assert resp.status_code == 409
+    assert resp.get_json() == {"error": "No copies available"}
+    assert client.get("/books/1").get_json()["available_copies"] == 0
+
+
+def test_spare_copies_beyond_the_holds_can_still_be_borrowed_by_anyone(client):
+    make_book(client, total_copies=3)
+    make_member(client, "Ann", "a@x.com")
+    make_member(client, "Bob", "b@x.com")
+    make_member(client, "Cy", "c@x.com")
+    client.post("/loans", json={"book_id": 1, "member_id": 1})  # 2 copies left
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})  # 1 hold
+
+    cy_first = client.post("/loans", json={"book_id": 1, "member_id": 3})  # 2 free > 1 hold
+    assert cy_first.status_code == 201
+    # 1 copy left and it is still reserved for Bob
+    assert client.post("/loans", json={"book_id": 1, "member_id": 1}).status_code == 409
+    assert client.post("/loans", json={"book_id": 1, "member_id": 2}).status_code == 201
+
+
+def test_renew_is_blocked_while_a_hold_waits_and_allowed_once_none_wait(client):
+    _single_copy_on_loan(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+    original_due = client.get("/loans").get_json()[0]["due_date"]
+
+    blocked = client.put("/loans/1/renew")
+
+    assert blocked.status_code == 409
+    assert "hold" in blocked.get_json()["error"]
+    assert client.get("/loans").get_json()[0]["due_date"] == original_due
+
+    # Bob no longer waits (his hold is fulfilled after Ann returns and he borrows)
+    client.put("/loans/1/return")
+    client.post("/loans", json={"book_id": 1, "member_id": 2})
+    assert client.put("/loans/2/renew").status_code == 200
+
+
+def test_ui_checkout_respects_holds(client):
+    _single_copy_on_loan(client)
+    client.post("/reservations", json={"book_id": 1, "member_id": 2})
+    client.put("/loans/1/return")
+
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "3"})  # Cy: not first
+    assert len(store.loans) == 1 and store.books[1].available_copies == 1
+
+    client.post("/ui/loans", data={"book_id": "1", "member_id": "2"})  # Bob: holder
+    assert len(store.loans) == 2 and store.books[1].available_copies == 0
+    assert store.reservations[1].fulfilled is True

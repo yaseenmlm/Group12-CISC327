@@ -3,7 +3,7 @@ from datetime import date
 from flask import Blueprint, jsonify, request
 
 from app import store
-from app.models.reservation import Reservation
+from app.models.reservation import Reservation, active_holds
 
 reservations_bp = Blueprint("reservations", __name__, url_prefix="/reservations")
 
@@ -18,6 +18,26 @@ def list_reservations():
     if member_id is not None:
         results = [r for r in results if r.member_id == member_id]
     return jsonify([r.to_dict() for r in results])
+
+
+@reservations_bp.route("/queue", methods=["GET"])
+def hold_queue():
+    """Open holds for one book in the order they will be served (R8)."""
+    book_id = request.args.get("book_id", type=int)
+    if book_id is None:
+        return jsonify({"error": "book_id is required"}), 400
+    if store.books.get(book_id) is None:
+        return jsonify({"error": "Book not found"}), 404
+    queue = [
+        {
+            "position": position,
+            "reservation_id": hold.id,
+            "member_id": hold.member_id,
+            "reservation_date": hold.reservation_date.isoformat(),
+        }
+        for position, hold in enumerate(active_holds(book_id), start=1)
+    ]
+    return jsonify(queue)
 
 
 @reservations_bp.route("", methods=["POST"])

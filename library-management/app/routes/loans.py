@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 
 from app import store
 from app.models.loan import Loan, LOAN_PERIOD_DAYS
+from app.models.reservation import active_holds, can_check_out, fulfill_hold
 
 FINE_PER_DAY = 0.25  # dollars charged per day overdue
 
@@ -29,6 +30,11 @@ def checkout_book():
     if book is None:
         return jsonify({"error": "Book not found"}), 404
 
+    if not can_check_out(book, data["member_id"]):
+        if book.available_copies <= 0:
+            return jsonify({"error": "No copies available"}), 409
+        return jsonify({"error": "Book is on hold for another member"}), 409
+
     book.available_copies -= 1
 
     loan_id = store.next_id("loan")
@@ -39,6 +45,7 @@ def checkout_book():
         due_date=Loan.default_due_date(),
     )
     store.loans[loan_id] = loan
+    fulfill_hold(data["book_id"], data["member_id"])
     return jsonify(loan.to_dict()), 201
 
 
@@ -64,6 +71,8 @@ def renew_loan(loan_id):
         return jsonify({"error": "Loan not found"}), 404
     if loan.return_date is not None:
         return jsonify({"error": "Loan already returned"}), 400
+    if any(h.member_id != loan.member_id for h in active_holds(loan.book_id)):
+        return jsonify({"error": "Cannot renew: another member has a hold on this book"}), 409
 
     loan.due_date = loan.due_date + timedelta(days=LOAN_PERIOD_DAYS)
     return jsonify(loan.to_dict())
