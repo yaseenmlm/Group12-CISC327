@@ -1,3 +1,5 @@
+from datetime import date
+
 from flask import Blueprint, jsonify, request
 
 from app import store
@@ -49,3 +51,34 @@ def delete_member(member_id):
     if member is None:
         return jsonify({"error": "Member not found"}), 404
     return "", 204
+
+
+@members_bp.route("/<int:member_id>/overdue", methods=["GET"])
+def member_overdue(member_id):
+    """Front-desk alert: open loans of this member that are past their due date."""
+    member = store.members.get(member_id)
+    if member is None:
+        return jsonify({"error": "Member not found"}), 404
+
+    today = date.today()
+    overdue = []
+    for loan in store.loans.values():
+        if loan.member_id == member_id and loan.return_date is None and loan.due_date < today:
+            book = store.books.get(loan.book_id)
+            overdue.append(
+                {
+                    "loan_id": loan.id,
+                    "book_id": loan.book_id,
+                    "book_title": book.title if book else None,
+                    "due_date": loan.due_date.isoformat(),
+                    "days_overdue": (today - loan.due_date).days,
+                }
+            )
+    return jsonify(
+        {
+            "member_id": member_id,
+            "name": member.name,
+            "has_overdue": bool(overdue),
+            "overdue_loans": overdue,
+        }
+    )
