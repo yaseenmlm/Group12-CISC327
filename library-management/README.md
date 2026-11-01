@@ -46,11 +46,12 @@ app working without a REST client, and calls the same in-memory store.
 | GET | `/books/<id>` | Get one book |
 | PUT | `/books/<id>` | Update a book |
 | DELETE | `/books/<id>` | Delete a book |
-| GET | `/members` | List all members |
+| GET | `/members?search=` | List all members; `search` filters by name (case-insensitive, partial match) |
 | POST | `/members` | Create a member |
 | GET | `/members/<id>` | Get one member |
 | PUT | `/members/<id>` | Update a member |
 | DELETE | `/members/<id>` | Delete a member |
+| GET | `/members/<id>/overdue` | Front-desk alert: `has_overdue` plus the member's open loans past their due date (`loan_id`, `book_id`, `book_title`, `due_date`, `days_overdue`) |
 | POST | `/loans` | Check out a book (`book_id`, `member_id`) |
 | PUT | `/loans/<id>/return` | Return a loaned book |
 | GET | `/loans?member_id=&book_id=` | Look up loans |
