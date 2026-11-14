@@ -49,6 +49,8 @@ def create_reservation():
     member = store.members.get(data["member_id"])
     if member is None:
         return jsonify({"error": "Member not found"}), 404
+    if any(h.member_id == data["member_id"] for h in active_holds(data["book_id"])):
+        return jsonify({"error": "Member already has a hold on this book"}), 409
 
     reservation_id = store.next_id("reservation")
     reservation = Reservation(
