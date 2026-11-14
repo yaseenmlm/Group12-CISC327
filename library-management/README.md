@@ -54,7 +54,7 @@ app working without a REST client, and calls the same in-memory store.
 | DELETE | `/members/<id>` | Delete a member |
 | GET | `/members/<id>/overdue` | Front-desk alert: `has_overdue` plus the member's open loans past their due date (`loan_id`, `book_id`, `book_title`, `due_date`, `days_overdue`) |
 | POST | `/loans` | Check out a book (`book_id`, `member_id`) |
-| PUT | `/loans/<id>/return` | Return a loaned book |
+| PUT | `/loans/<id>/return` | Return a loaned book. The response also has `hold_notified`: `true` if the member next in the hold queue was sent a "hold ready" notification, `false` if the notification failed (the return still succeeds), `null` if nobody was waiting |
 | GET | `/loans?member_id=&book_id=` | Look up loans |
 | PUT | `/loans/<id>/renew` | Renew a loan for another 14 days (`409` if another member has a hold on the book) |
 | GET | `/loans/<id>/fine` | Fine for a loan at $0.25 per day overdue |
@@ -72,6 +72,19 @@ app working without a REST client, and calls the same in-memory store.
 - `PUT /loans/<id>/renew` returns `409` while any other member has an open hold
   on the book.
 - The same checkout rules apply to the web UI Loans page.
+
+### Hold-ready notification
+
+- When a loan is returned and the freed copy covers a member's place in the hold queue,
+  the app calls `send_notification(member.email, subject, message)` from
+  `notification_service.py` (a simulator beside `run.py`; no real email is sent).
+- The member at position *n* of the queue is notified when *n* copies are free, so a
+  return never notifies someone who is still behind the copies available.
+- A failed notification never blocks the return: the loan is still returned and the
+  response reports `"hold_notified": false`.
+- The web UI return button follows the same rule.
+- `POST /loans` now returns `404` (`Member not found`) for an unknown member, and
+  `GET /loans?member_id=` now filters by the loan's member.
 
 ## Tests
 
