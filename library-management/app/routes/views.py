@@ -7,6 +7,7 @@ from app.models.book import Book
 from app.models.loan import Loan
 from app.models.member import Member
 from app.models.reservation import can_check_out, fulfill_hold
+from app.routes.loans import notify_hold_ready
 
 views_bp = Blueprint("views", __name__)
 
@@ -85,4 +86,5 @@ def return_loan_page(loan_id):
         book = store.books.get(loan.book_id)
         if book is not None:
             book.available_copies += 1
+            notify_hold_ready(book)
     return redirect(url_for("views.loans_page"))
