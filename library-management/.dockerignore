@@ -1,0 +1,33 @@
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Virtual environments
+.venv
+venv
+env
+
+# Python / test artifacts
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+test-results
+playwright-report
+
+# Tests and dev-only files (not needed to run the app)
+tests
+requirements-e2e.txt
+README.md
+Dockerfile
+.dockerignore
+
+# Secrets and editor/OS files
+.env
+*.env
+.vscode
+.idea
+.DS_Store
+Thumbs.db
