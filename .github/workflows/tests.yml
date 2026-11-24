@@ -26,5 +26,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      # tests/e2e drive a browser against a running server (see README), so
+      # they are run by hand locally and against the Docker container, not here.
       - name: Run tests with coverage (fails below 90%)
-        run: python -m pytest -v --cov=app --cov-report=term-missing --cov-fail-under=90
+        run: python -m pytest -v --ignore=tests/e2e --cov=app --cov-report=term-missing --cov-fail-under=90
