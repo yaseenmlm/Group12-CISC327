@@ -88,6 +88,66 @@ app working without a REST client, and calls the same in-memory store.
 
 ## Tests
 
+Unit/integration tests (Flask test client, no server needed):
+
 ```bash
-pytest
+pytest --ignore=tests/e2e
 ```
+
+## Running with Docker
+
+**Prerequisites:** Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+Check with `docker --version`. Run these commands from the `library-management/`
+folder (where the `Dockerfile` is).
+
+| Step | Command |
+|---|---|
+| Build the image | `docker build -t cisc327-a4 .` |
+| Run the container | `docker run --rm -p 5000:5000 --name cisc327-a4 cisc327-a4` |
+| Open the app | <http://localhost:5000/> |
+| Stop the container | `Ctrl+C` in its terminal, or `docker stop cisc327-a4` from another one |
+
+- The app listens on **port 5000** inside the container (bound to `0.0.0.0`),
+  and `-p 5000:5000` publishes it on port 5000 of your machine.
+- `--rm` deletes the container when it stops.
+- **Data does not persist.** Everything is kept in memory, so all books,
+  members and loans are lost when the container stops — every `docker run`
+  starts with an empty library. (Same as running `python run.py` locally.)
+- Pre-built image on Docker Hub: `docker pull <DOCKERHUB_USER>/cisc327-a4:latest`
+  then `docker run --rm -p 5000:5000 <DOCKERHUB_USER>/cisc327-a4:latest`.
+
+## End-to-end (browser) tests
+
+`tests/e2e/` uses [Playwright](https://playwright.dev/python/) to click through
+the web UI in a real Chromium browser, over HTTP, against a **running** copy of
+the app. Each test creates its own uniquely named books/members, so the tests
+don't depend on each other or on what is already in memory.
+
+| File | Member | Scenarios |
+|---|---|---|
+| `test_a4_yaseen.py` | Yaseen | check out + return a book; checkout blocked when no copies are left |
+| `test_a4_rohan.py` | Rohan | add + delete a book; member with an invalid email is rejected |
+
+One-time setup:
+
+```bash
+pip install -r requirements-e2e.txt
+python -m playwright install chromium
+```
+
+Then start the app in one terminal — **either** locally **or** in Docker (both use port 5000, so only one at a time):
+
+```bash
+python run.py                                # local
+docker run --rm -p 5000:5000 cisc327-a4      # or: container
+```
+
+and run the tests from a second terminal (in `library-management/`):
+
+```bash
+python -m pytest tests/e2e -v --headed       # --headed shows the browser
+```
+
+The tests target `http://127.0.0.1:5000` by default; set `E2E_BASE_URL` to point
+them somewhere else. If nothing is running there, they stop with a message
+telling you to start the app.
