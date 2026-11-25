@@ -113,8 +113,8 @@ folder (where the `Dockerfile` is).
 - **Data does not persist.** Everything is kept in memory, so all books,
   members and loans are lost when the container stops — every `docker run`
   starts with an empty library. (Same as running `python run.py` locally.)
-- Pre-built image on Docker Hub: `docker pull <DOCKERHUB_USER>/cisc327-a4:latest`
-  then `docker run --rm -p 5000:5000 <DOCKERHUB_USER>/cisc327-a4:latest`.
+- Pre-built image on Docker Hub: `docker pull yaseenmlm/cisc327-a4:latest`
+  then `docker run --rm -p 5000:5000 yaseenmlm/cisc327-a4:latest`.
 
 ## End-to-end (browser) tests
 
